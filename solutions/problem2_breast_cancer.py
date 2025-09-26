@@ -93,17 +93,20 @@ def _run_shap(best_result: ModelResult, X_train: pd.DataFrame, X_test: pd.DataFr
 
     explainer = shap.KernelExplainer(_pipeline_proba, background)
     shap_values = explainer.shap_values(samples)
+    if isinstance(shap_values, list):
+        shap_matrix = shap_values[1]
+    else:
+        shap_matrix = shap_values[:, :, 1]
 
-    mean_abs_shap = np.abs(shap_values[1]).mean(axis=0)
+    mean_abs_shap = np.abs(shap_matrix).mean(axis=0)
     shap_importances = pd.Series(mean_abs_shap, index=X_train.columns).sort_values(ascending=False)
 
     # Summary plot
     plt.figure(figsize=(10, 6))
     shap.summary_plot(
-        shap_values,
+        shap_matrix,
         samples,
         feature_names=X_train.columns,
-        class_names=class_names,
         show=False,
     )
     summary_plot_path = output_dir / "shap_summary.png"
@@ -117,7 +120,7 @@ def _run_shap(best_result: ModelResult, X_train: pd.DataFrame, X_test: pd.DataFr
         plt.figure(figsize=(6, 4))
         shap.dependence_plot(
             feature,
-            shap_values[1],
+            shap_matrix,
             samples,
             feature_names=X_train.columns,
             interaction_index=None,
@@ -142,7 +145,7 @@ def _run_shap(best_result: ModelResult, X_train: pd.DataFrame, X_test: pd.DataFr
     sample_details = []
     for idx, (sample_index, row) in enumerate(samples.iterrows()):
         contributions = sorted(
-            zip(X_train.columns, shap_values[1][idx]),
+            zip(X_train.columns, shap_matrix[idx]),
             key=lambda item: abs(item[1]),
             reverse=True,
         )[:5]
