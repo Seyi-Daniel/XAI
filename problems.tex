@@ -1,0 +1,76 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\setlist[itemize]{itemsep=0.25em}
+\setlist[enumerate]{itemsep=0.4em}
+
+\begin{document}
+
+\section*{Programming Problem 1: LIME for Classification}
+
+Use the \textbf{Diabetes dataset}.
+
+\begin{enumerate}
+\item Train three classification models (e.g. Logistic Regression, SVM, and MLP). (3 points)
+
+\item Select 5 test samples and generate local explanations using \textbf{LIME}. (5 points)
+
+\item Report the most influential features identified by LIME for each sample. (3 points)
+
+\item Discuss whether the influential features align with the global model behavior. (5 points)
+
+\item In LIME, the importance of perturbed samples is determined using a kernel function that assigns higher weights to points closer to the instance being explained. The kernel is defined as:
+
+\[
+\pi_x(z) = \exp\!\left( - \frac{D(x, z)^2}{(0.75\sqrt{d})^2} \right),
+\]
+
+where:
+\begin{itemize}
+    \item x = instance being explained,
+    \item z = perturbed sample,
+    \item D(x, z) = Euclidean distance between x and z,
+    \item d = number of features in the dataset.
+\end{itemize}
+
+Analyze how the choice of the kernel width parameter $0.75\sqrt{d}$ affects the distribution of weights. Experiment by replacing 0.75 with 0.25 and 1.0. Discuss your observations on two samples. (4 points)
+\end{enumerate}
+
+\section*{Programming Problem 2: SHAP for Classification}
+
+Use the \textbf{Breast Cancer dataset} from sklearn.datasets.load\_breast\_cancer.
+
+\begin{enumerate}
+\item Train three classification models (e.g. Logistic Regression, SVM, and MLP). (3 points)
+
+\item Use \textbf{SHAP} to explain predictions for 5 randomly chosen test samples. (5 points)
+
+\item Plot SHAP summary and dependence plots to visualize feature importance. (5 points)
+\end{enumerate}
+
+\section*{Programming Problem 3: LIME and SHAP on MNIST}
+
+Use the \textbf{MNIST dataset}.
+
+\begin{enumerate}
+\item Train a CNN model on MNIST. (2 points)
+
+\item Use \textbf{LIME} to explain predictions for 5 test images. (5 points)
+
+\item Use \textbf{SHAP (DeepExplainer or GradientExplainer)} to explain the same 5 images. (5 points)
+
+\item Compare and discuss the differences and similarities between LIME and SHAP explanations. (5 point)
+\end{enumerate}
+
+\section*{Programming Problem 4: LIME and SHAP with Pretrained Model}
+
+\begin{enumerate}
+\item Load a pretrained \textbf{Inception V3 or ResNet50} model and classify 5 CIFAR-10 images. (5 points)
+
+\item Generate explanations for each image using both \textbf{LIME} and \textbf{SHAP}. (5 points)
+
+\item Critically evaluate which method provides more intuitive explanations and justify your reasoning. (5 points)
+\end{enumerate}
+
+\end{document}
