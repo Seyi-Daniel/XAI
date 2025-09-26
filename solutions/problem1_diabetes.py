@@ -94,9 +94,20 @@ def _summarise_lime_features(exp, class_idx: int) -> List[Tuple[str, float]]:
     ]
 
 
-def _collect_kernel_width_stats(explainer: LimeTabularExplainer, instance: np.ndarray, predict_fn, class_idx: int) -> Dict[str, float]:
-    explanation = explainer.explain_instance(instance, predict_fn, num_features=10, num_samples=2000)
-    weights = explanation.weights
+def _collect_kernel_width_stats(
+    explainer: LimeTabularExplainer,
+    instance: np.ndarray,
+    predict_fn,
+    class_idx: int,
+) -> Dict[str, float]:
+    explanation = explainer.explain_instance(
+        instance,
+        predict_fn,
+        num_features=10,
+        num_samples=2000,
+        labels=[class_idx],
+    )
+    weights = np.array([weight for _, weight in explanation.local_exp[class_idx]])
     return {
         "mean": float(np.mean(weights)),
         "std": float(np.std(weights)),
@@ -143,8 +154,14 @@ def run(output_dir: Path | str = REPORT_DIR) -> Dict[str, object]:
     lime_json_payload = {}
     for idx in selected_indices:
         instance = X_test[idx]
-        explanation = explainer.explain_instance(instance, predict_fn, num_features=10)
-        class_idx = int(np.argmax(predict_fn([instance])[0]))
+        predicted_probs = predict_fn([instance])[0]
+        class_idx = int(np.argmax(predicted_probs))
+        explanation = explainer.explain_instance(
+            instance,
+            predict_fn,
+            num_features=10,
+            labels=[class_idx],
+        )
         feature_weights = _summarise_lime_features(explanation, class_idx)
         sample_summary = {
             "sample_index": int(idx),
