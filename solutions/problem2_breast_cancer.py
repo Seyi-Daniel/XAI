@@ -83,7 +83,15 @@ def _run_shap(best_result: ModelResult, X_train: pd.DataFrame, X_test: pd.DataFr
     background = shap.sample(X_train, 100, random_state=RANDOM_STATE)
     samples = X_test.sample(N_SAMPLES, random_state=RANDOM_STATE)
 
-    explainer = shap.KernelExplainer(best_result.model.predict_proba, background)
+    def _pipeline_proba(data):
+        if not isinstance(data, pd.DataFrame):
+            data = pd.DataFrame(data, columns=X_train.columns)
+        else:
+            # Ensure the columns are in the same order as training data
+            data = data[X_train.columns]
+        return best_result.model.predict_proba(data)
+
+    explainer = shap.KernelExplainer(_pipeline_proba, background)
     shap_values = explainer.shap_values(samples)
 
     mean_abs_shap = np.abs(shap_values[1]).mean(axis=0)
