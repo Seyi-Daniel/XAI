@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -255,7 +255,18 @@ def _shap_for_images(
         tensor = preprocess(image).to(DEVICE)
         processed_images.append(tensor)
     batch = torch.stack(processed_images)
-    shap_values = explainer.shap_values(batch)
+    shap_result = explainer.shap_values(batch)
+
+    shap_indexes: np.ndarray | None = None
+    shap_values: Sequence[torch.Tensor | np.ndarray] | torch.Tensor | np.ndarray
+    if isinstance(shap_result, tuple) and len(shap_result) == 2:
+        shap_values, shap_indexes = shap_result
+        shap_indexes = np.asarray(shap_indexes)
+    else:
+        shap_values = shap_result
+
+    if not isinstance(shap_values, (list, tuple)):
+        shap_values = [shap_values]
 
     shap_values_np: List[np.ndarray] = []
     for sv in shap_values:
@@ -281,7 +292,30 @@ def _shap_for_images(
             probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
         predicted_idx = int(np.argmax(probs))
 
-        shap_map = shap_contrib[predicted_idx].sum(axis=2)
+        sample_indexes: List[int] | None = None
+        if shap_indexes is not None:
+            sample_slice = np.asarray(shap_indexes[idx])
+            if sample_slice.ndim == 0:
+                sample_indexes = [int(sample_slice.item())]
+            else:
+                sample_indexes = [int(x) for x in sample_slice.tolist()]
+
+        if sample_indexes is not None:
+            try:
+                target_pos = sample_indexes.index(predicted_idx)
+                target_class = predicted_idx
+            except ValueError:
+                target_pos = 0
+                target_class = sample_indexes[0]
+        else:
+            if predicted_idx < len(shap_contrib):
+                target_pos = predicted_idx
+                target_class = predicted_idx
+            else:
+                target_pos = int(np.argmax(probs[: len(shap_contrib)]))
+                target_class = target_pos
+
+        shap_map = shap_contrib[target_pos].sum(axis=2)
         vmax = np.max(np.abs(shap_map)) + 1e-8
 
         path = output_dir / f"shap_image_{idx}.png"
@@ -292,7 +326,7 @@ def _shap_for_images(
 
         axes[1].imshow(np_image)
         axes[1].imshow(shap_map, cmap="seismic", alpha=0.6, vmin=-vmax, vmax=vmax)
-        axes[1].set_title(f"SHAP for {class_names[predicted_idx]}")
+        axes[1].set_title(f"SHAP for {class_names[target_class]}")
         axes[1].axis("off")
 
         plt.tight_layout()
@@ -300,7 +334,8 @@ def _shap_for_images(
         plt.close(fig)
 
         shap_summaries.append(
-            f"- Image {idx}: predicted {class_names[predicted_idx]} (p={probs[predicted_idx]:.3f}); figure: {path}"
+            f"- Image {idx}: predicted {class_names[predicted_idx]} (p={probs[predicted_idx]:.3f}); "
+            f"visualised class: {class_names[target_class]}; figure: {path}"
         )
     return shap_summaries
 
