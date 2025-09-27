@@ -174,12 +174,6 @@ def _lime_for_images(
 
 def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std tensors used for normalization.
-
-    TorchVision exposes preprocessing statistics in a few different ways
-    depending on the weight preset and version.  This helper inspects the
-    possible locations—direct attributes on the preprocessing transform,
-    composed transforms, module children, and the weight metadata—to recover the
-    correct tensors for de-normalising images before visualisation.
     """
 
     def _tensorise_stats(mean, std) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -204,11 +198,13 @@ def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Ten
             if stats is not None:
                 return stats
 
+
     if hasattr(preprocess, "children"):
         for transform in preprocess.children():
             stats = _tensorise_stats(getattr(transform, "mean", None), getattr(transform, "std", None))
             if stats is not None:
                 return stats
+
 
     meta = getattr(weights, "meta", {}) or {}
     stats = _tensorise_stats(meta.get("mean"), meta.get("std"))
@@ -216,27 +212,6 @@ def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Ten
         return stats
 
     raise ValueError("Unable to determine normalization statistics from weights.")
-
-
-def _to_numpy(value) -> np.ndarray:
-    """Convert a tensor-like object to a NumPy array."""
-
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu().numpy()
-    if isinstance(value, np.ndarray):
-        return value
-    return np.asarray(value)
-
-
-def _ensure_hwc(value: np.ndarray) -> np.ndarray:
-    """Ensure SHAP outputs are arranged as HWC (or NHWC) arrays."""
-
-    if value.ndim == 4:
-        return np.transpose(value, (0, 2, 3, 1))
-    if value.ndim == 3:
-        return np.transpose(value, (1, 2, 0))
-    return value
-
 
 def _shap_for_images(
     model: nn.Module,
@@ -279,6 +254,7 @@ def _shap_for_images(
         arr = _to_numpy(sv)
 
         if arr.ndim == 5:
+
             ranked = np.transpose(arr, (1, 0, 2, 3, 4))
             for rank_arr in ranked:
                 shap_values_np.append(_ensure_hwc(rank_arr))
