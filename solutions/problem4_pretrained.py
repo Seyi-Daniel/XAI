@@ -175,32 +175,59 @@ def _lime_for_images(
 def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std tensors used for normalization.
 
-    Some torchvision weights expose normalization statistics via their meta
-    dictionary, while others only provide them inside the composed preprocessing
-    pipeline.  Older code assumed the `meta` entries were always present, which
-    is no longer true for every release.  This helper inspects the transform
-    pipeline first and falls back to the metadata if needed so that we always
-    recover consistent statistics for de-normalising tensors before
-    visualisation.
+    TorchVision has evolved the way pretrained weight presets expose their
+    preprocessing pipelines.  Some presets are simple ``Compose`` objects with
+    an explicit :class:`~torchvision.transforms.Normalize`, others store the
+    statistics directly on the preset object, and older releases relied on the
+    ``meta`` dictionary.  The original implementation only checked for
+    ``transforms.Normalize`` instances, which breaks with the newer
+    ``ImageClassification`` presets that skip composing the individual
+    transforms.  This helper now probes each of those locations so that we can
+    always recover the correct statistics.
     """
 
-    normalize = None
-    transforms_seq = getattr(preprocess, "transforms", [])
-    for transform in transforms_seq:
-        if isinstance(transform, transforms.Normalize):
-            normalize = transform
-            break
+    def _tensorise_stats(mean, std) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if mean is None or std is None:
+            return None
+        mean_tensor = torch.as_tensor(mean, dtype=torch.float32, device=DEVICE)
+        std_tensor = torch.as_tensor(std, dtype=torch.float32, device=DEVICE)
+        if mean_tensor.ndim == 1:
+            mean_tensor = mean_tensor.view(-1, 1, 1)
+        if std_tensor.ndim == 1:
+            std_tensor = std_tensor.view(-1, 1, 1)
+        return mean_tensor, std_tensor
 
-    if normalize is not None:
-        mean = torch.tensor(normalize.mean, device=DEVICE).view(3, 1, 1)
-        std = torch.tensor(normalize.std, device=DEVICE).view(3, 1, 1)
-        return mean, std
+    # 1) The preset itself may expose ``mean`` and ``std`` attributes (newer
+    # torchvision versions use ``ImageClassification`` objects that behave this
+    # way).
+    stats = _tensorise_stats(getattr(preprocess, "mean", None), getattr(preprocess, "std", None))
+    if stats is not None:
+        return stats
 
+    # 2) Fall back to inspecting composed transforms (covers the classic
+    # ``transforms.Compose`` case).
+    transforms_seq = getattr(preprocess, "transforms", None)
+    if transforms_seq is not None:
+        for transform in transforms_seq:
+            stats = _tensorise_stats(getattr(transform, "mean", None), getattr(transform, "std", None))
+            if stats is not None:
+                return stats
+
+    # ``torchvision.transforms.v2`` pipelines are ``nn.Module`` instances.  If
+    # available, iterating over ``children`` helps cover those cases without
+    # importing the v2 API directly.
+    if hasattr(preprocess, "children"):
+        for transform in preprocess.children():
+            stats = _tensorise_stats(getattr(transform, "mean", None), getattr(transform, "std", None))
+            if stats is not None:
+                return stats
+
+    # 3) Finally consult the metadata dictionary as a last resort (older
+    # torchvision releases).
     meta = getattr(weights, "meta", {}) or {}
-    if "mean" in meta and "std" in meta:
-        mean = torch.tensor(meta["mean"], device=DEVICE).view(3, 1, 1)
-        std = torch.tensor(meta["std"], device=DEVICE).view(3, 1, 1)
-        return mean, std
+    stats = _tensorise_stats(meta.get("mean"), meta.get("std"))
+    if stats is not None:
+        return stats
 
     raise ValueError("Unable to determine normalization statistics from weights.")
 
