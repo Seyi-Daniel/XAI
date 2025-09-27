@@ -197,18 +197,49 @@ def _shap_for_images(
     batch = torch.stack(processed_images)
     shap_values = explainer.shap_values(batch)
 
+    shap_values_np: List[np.ndarray] = []
+    for sv in shap_values:
+        if isinstance(sv, torch.Tensor):
+            arr = sv.detach().cpu().numpy()
+        else:
+            arr = np.asarray(sv)
+        # shap returns values with channel-first ordering -> convert to HWC
+        shap_values_np.append(np.transpose(arr, (0, 2, 3, 1)))
+
+    mean = torch.tensor(weights.meta["mean"], device=DEVICE).view(3, 1, 1)
+    std = torch.tensor(weights.meta["std"], device=DEVICE).view(3, 1, 1)
+
     shap_summaries = []
     for idx in range(batch.size(0)):
-        np_image = batch[idx].cpu().numpy().transpose(1, 2, 0)
-        shap_contrib = [sv[idx].transpose(1, 2, 0) for sv in shap_values]
-        path = output_dir / f"shap_image_{idx}.png"
-        shap.image_plot(shap_contrib, np.expand_dims(np_image, axis=0), show=False)
-        plt.savefig(path, bbox_inches="tight")
-        plt.close()
+        tensor_image = batch[idx]
+        denorm = (tensor_image * std + mean).clamp(0, 1)
+        np_image = denorm.cpu().numpy().transpose(1, 2, 0)
+
+        shap_contrib = [sv[idx] for sv in shap_values_np]
+
         with torch.no_grad():
             logits = model(batch[idx: idx + 1])
             probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
         predicted_idx = int(np.argmax(probs))
+
+        shap_map = shap_contrib[predicted_idx].sum(axis=2)
+        vmax = np.max(np.abs(shap_map)) + 1e-8
+
+        path = output_dir / f"shap_image_{idx}.png"
+        fig, axes = plt.subplots(1, 2, figsize=(6, 3))
+        axes[0].imshow(np_image)
+        axes[0].set_title("Original")
+        axes[0].axis("off")
+
+        axes[1].imshow(np_image)
+        axes[1].imshow(shap_map, cmap="seismic", alpha=0.6, vmin=-vmax, vmax=vmax)
+        axes[1].set_title(f"SHAP for {class_names[predicted_idx]}")
+        axes[1].axis("off")
+
+        plt.tight_layout()
+        plt.savefig(path, bbox_inches="tight")
+        plt.close(fig)
+
         shap_summaries.append(
             f"- Image {idx}: predicted {class_names[predicted_idx]} (p={probs[predicted_idx]:.3f}); figure: {path}"
         )
