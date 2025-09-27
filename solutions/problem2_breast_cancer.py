@@ -1,7 +1,7 @@
 """Problem 2: SHAP for Classification on the Breast Cancer dataset."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
@@ -77,6 +77,18 @@ def _evaluate(models: Dict[str, Pipeline], X_test: pd.DataFrame, y_test: np.ndar
             f1=f1_score(y_test, y_pred, zero_division=0),
         )
     return summary
+
+
+def _serialize_metrics(result: ModelResult) -> Dict[str, float | str]:
+    """Convert a ``ModelResult`` to a JSON-friendly representation."""
+
+    return {
+        "name": result.name,
+        "accuracy": result.accuracy,
+        "precision": result.precision,
+        "recall": result.recall,
+        "f1": result.f1,
+    }
 
 
 def _run_shap(best_result: ModelResult, X_train: pd.DataFrame, X_test: pd.DataFrame, class_names: List[str], output_dir: Path):
@@ -210,11 +222,11 @@ def run(output_dir: Path | str = REPORT_DIR) -> Dict[str, object]:
 
     dump_json(
         output_dir / "metrics.json",
-        {name: asdict(result) for name, result in results.items()},
+        {name: _serialize_metrics(result) for name, result in results.items()},
     )
 
     return {
-        "metrics": {name: asdict(result) for name, result in results.items()},
+        "metrics": {name: _serialize_metrics(result) for name, result in results.items()},
         "best_model": best_model.name,
     }
 
