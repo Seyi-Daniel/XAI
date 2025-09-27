@@ -268,38 +268,6 @@ def _shap_for_images(
     if not isinstance(shap_values, (list, tuple)):
         shap_values = [shap_values]
 
-    def _to_numpy(value) -> np.ndarray:
-        if isinstance(value, torch.Tensor):
-            return value.detach().cpu().numpy()
-        return np.asarray(value)
-
-    def _ensure_hwc(arr: np.ndarray) -> np.ndarray:
-        """Normalise SHAP outputs to ``(N, H, W, C)`` regardless of backend."""
-
-        if arr.ndim == 5:
-            # ``(N, K, C, H, W)`` – split the ranked axis outside this helper.
-            raise ValueError("Ranked SHAP values should be split before calling _ensure_hwc.")
-
-        if arr.ndim == 4:
-            # Channel-first ``(N, C, H, W)``
-            if arr.shape[1] <= 4 and arr.shape[1] != arr.shape[-1]:
-                return np.transpose(arr, (0, 2, 3, 1))
-            # Already channel-last ``(N, H, W, C)``
-            if arr.shape[-1] <= 4:
-                return arr
-            # Fall back to treating the second dimension as channels.
-            return np.transpose(arr, (0, 2, 3, 1))
-
-        if arr.ndim == 3:
-            # Add the batch axis back and recurse.
-            return _ensure_hwc(arr[np.newaxis, ...])
-
-        if arr.ndim == 2:
-            # Single-channel heatmap without spatial channels.
-            return arr[np.newaxis, :, :, np.newaxis]
-
-        raise ValueError(f"Unsupported SHAP value shape: {arr.shape}")
-
     shap_values_np: List[np.ndarray] = []
     for sv in shap_values:
         arr = _to_numpy(sv)
