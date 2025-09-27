@@ -172,6 +172,49 @@ def _lime_for_images(
     return lime_summaries
 
 
+def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return mean and std tensors used for normalization.
+
+    Some torchvision weights expose normalization statistics via their meta
+    dictionary, while others only provide them inside the composed preprocessing
+    pipeline.  Older code assumed the `meta` entries were always present, which
+    is no longer true for every release.  This helper inspects the transform
+    pipeline first and falls back to the metadata if needed so that we always
+    recover consistent statistics for de-normalising tensors before
+    visualisation.
+    """
+
+    normalize = None
+    transforms_seq = getattr(preprocess, "transforms", [])
+    for transform in transforms_seq:
+        if isinstance(transform, transforms.Normalize):
+            normalize = transform
+            break
+
+    if normalize is not None:
+        mean = torch.tensor(normalize.mean, device=DEVICE).view(3, 1, 1)
+        std = torch.tensor(normalize.std, device=DEVICE).view(3, 1, 1)
+        return mean, std
+
+    meta = getattr(weights, "meta", {}) or {}
+    if "mean" in meta and "std" in meta:
+        mean = torch.tensor(meta["mean"], device=DEVICE).view(3, 1, 1)
+        std = torch.tensor(meta["std"], device=DEVICE).view(3, 1, 1)
+        return mean, std
+
+    raise ValueError("Unable to determine normalization statistics from weights.")
+
+
+def _to_numpy(value) -> np.ndarray:
+    """Convert a tensor-like object to a NumPy array."""
+
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    if isinstance(value, np.ndarray):
+        return value
+    return np.asarray(value)
+
+
 def _shap_for_images(
     model: nn.Module,
     weights,
@@ -199,15 +242,11 @@ def _shap_for_images(
 
     shap_values_np: List[np.ndarray] = []
     for sv in shap_values:
-        if isinstance(sv, torch.Tensor):
-            arr = sv.detach().cpu().numpy()
-        else:
-            arr = np.asarray(sv)
+        arr = _to_numpy(sv)
         # shap returns values with channel-first ordering -> convert to HWC
         shap_values_np.append(np.transpose(arr, (0, 2, 3, 1)))
 
-    mean = torch.tensor(weights.meta["mean"], device=DEVICE).view(3, 1, 1)
-    std = torch.tensor(weights.meta["std"], device=DEVICE).view(3, 1, 1)
+    mean, std = _extract_normalization(preprocess, weights)
 
     shap_summaries = []
     for idx in range(batch.size(0)):
