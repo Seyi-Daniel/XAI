@@ -34,14 +34,15 @@ class SimpleCNN(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
+        self.pool1 = nn.MaxPool2d(2, 2)
+        self.pool2 = nn.MaxPool2d(2, 2)
         self.dropout = nn.Dropout(0.25)
         self.fc1 = nn.Linear(64 * 7 * 7, 128)
         self.fc2 = nn.Linear(128, 10)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool1(F.relu(self.conv1(x)))
+        x = self.pool2(F.relu(self.conv2(x)))
         x = x.view(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
@@ -149,12 +150,12 @@ def _shap_explanations(model: nn.Module, background: torch.Tensor, images: torch
     model.eval()
     background = background.to(DEVICE)
     explainer = shap.DeepExplainer(model, background)
-    shap_values = explainer.shap_values(images.to(DEVICE))
+    shap_values = explainer.shap_values(images.to(DEVICE), check_additivity=False)
 
     shap_summaries = []
     for i in range(images.size(0)):
-        image = images[i].cpu().numpy().transpose(1, 2, 0)
-        shap_contrib = [sv[i].transpose(1, 2, 0) for sv in shap_values]
+        image = images[i].cpu().numpy().squeeze(0)
+        shap_contrib = [np.expand_dims(sv[i, 0], axis=0) for sv in shap_values]
         path = output_dir / f"shap_sample_{i}.png"
         shap.image_plot(shap_contrib, np.expand_dims(image, axis=0), show=False)
         plt.savefig(path, bbox_inches="tight")
