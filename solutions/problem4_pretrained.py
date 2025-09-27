@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -105,16 +105,22 @@ def _evaluate(model: nn.Module, dataloaders: Dict[str, DataLoader]) -> float:
     return correct / total
 
 
-def _load_original_images(weights) -> List[Image.Image]:
+def _load_original_images(weights) -> Tuple[List[Image.Image], List[str]]:
     raw_dataset = datasets.CIFAR10(root="data", train=False, download=True, transform=None)
     images = []
     for i in range(NUM_IMAGES):
         image, _ = raw_dataset[i]
         images.append(image)
-    return images
+    return images, list(raw_dataset.classes)
 
 
-def _lime_for_images(model: nn.Module, weights, original_images: List[Image.Image], output_dir: Path) -> List[str]:
+def _lime_for_images(
+    model: nn.Module,
+    weights,
+    original_images: List[Image.Image],
+    class_names: List[str],
+    output_dir: Path,
+) -> List[str]:
     explainer = lime_image.LimeImageExplainer(random_state=RANDOM_STATE)
     preprocess = weights.transforms()
 
@@ -130,7 +136,6 @@ def _lime_for_images(model: nn.Module, weights, original_images: List[Image.Imag
             probs = torch.softmax(outputs, dim=1).cpu().numpy()
         return probs
 
-    class_names = datasets.CIFAR10.classes
     lime_summaries = []
     for idx, image in enumerate(original_images):
         np_image = np.array(image)
@@ -167,7 +172,14 @@ def _lime_for_images(model: nn.Module, weights, original_images: List[Image.Imag
     return lime_summaries
 
 
-def _shap_for_images(model: nn.Module, weights, original_images: List[Image.Image], dataloaders: Dict[str, DataLoader], output_dir: Path) -> List[str]:
+def _shap_for_images(
+    model: nn.Module,
+    weights,
+    original_images: List[Image.Image],
+    class_names: List[str],
+    dataloaders: Dict[str, DataLoader],
+    output_dir: Path,
+) -> List[str]:
     preprocess = weights.transforms()
     background_images = []
     for inputs, _ in dataloaders["train"]:
@@ -185,7 +197,6 @@ def _shap_for_images(model: nn.Module, weights, original_images: List[Image.Imag
     batch = torch.stack(processed_images)
     shap_values = explainer.shap_values(batch)
 
-    class_names = datasets.CIFAR10.classes
     shap_summaries = []
     for idx in range(batch.size(0)):
         np_image = batch[idx].cpu().numpy().transpose(1, 2, 0)
@@ -213,13 +224,20 @@ def run(output_dir: Path | str = REPORT_DIR) -> Dict[str, object]:
     _fine_tune(model, dataloaders)
     accuracy = _evaluate(model, dataloaders)
 
-    original_images = _load_original_images(weights)
+    original_images, class_names = _load_original_images(weights)
 
     lime_dir = ensure_dir(output_dir / "lime")
     shap_dir = ensure_dir(output_dir / "shap")
 
-    lime_summaries = _lime_for_images(model, weights, original_images, lime_dir)
-    shap_summaries = _shap_for_images(model, weights, original_images, dataloaders, shap_dir)
+    lime_summaries = _lime_for_images(model, weights, original_images, class_names, lime_dir)
+    shap_summaries = _shap_for_images(
+        model,
+        weights,
+        original_images,
+        class_names,
+        dataloaders,
+        shap_dir,
+    )
 
     write_markdown(
         output_dir / "summary.md",
