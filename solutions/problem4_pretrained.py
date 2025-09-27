@@ -270,12 +270,16 @@ def _shap_for_images(
 
     shap_values_np: List[np.ndarray] = []
     for sv in shap_values:
-        if isinstance(sv, torch.Tensor):
-            arr = sv.detach().cpu().numpy()
-        else:
-            arr = np.asarray(sv)
-        # shap returns values with channel-first ordering -> convert to HWC
-        shap_values_np.append(np.transpose(arr, (0, 2, 3, 1)))
+        arr = _to_numpy(sv)
+
+        if arr.ndim == 5:
+            # ``GradientExplainer`` can return ranked outputs as ``(N, K, C, H, W)``.
+            ranked = np.transpose(arr, (1, 0, 2, 3, 4))
+            for rank_arr in ranked:
+                shap_values_np.append(_ensure_hwc(rank_arr))
+            continue
+
+        shap_values_np.append(_ensure_hwc(arr))
 
     mean, std = _extract_normalization(preprocess, weights)
 
