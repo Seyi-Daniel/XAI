@@ -174,16 +174,6 @@ def _lime_for_images(
 
 def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std tensors used for normalization.
-
-    TorchVision has evolved the way pretrained weight presets expose their
-    preprocessing pipelines.  Some presets are simple ``Compose`` objects with
-    an explicit :class:`~torchvision.transforms.Normalize`, others store the
-    statistics directly on the preset object, and older releases relied on the
-    ``meta`` dictionary.  The original implementation only checked for
-    ``transforms.Normalize`` instances, which breaks with the newer
-    ``ImageClassification`` presets that skip composing the individual
-    transforms.  This helper now probes each of those locations so that we can
-    always recover the correct statistics.
     """
 
     def _tensorise_stats(mean, std) -> tuple[torch.Tensor, torch.Tensor] | None:
@@ -197,15 +187,10 @@ def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Ten
             std_tensor = std_tensor.view(-1, 1, 1)
         return mean_tensor, std_tensor
 
-    # 1) The preset itself may expose ``mean`` and ``std`` attributes (newer
-    # torchvision versions use ``ImageClassification`` objects that behave this
-    # way).
     stats = _tensorise_stats(getattr(preprocess, "mean", None), getattr(preprocess, "std", None))
     if stats is not None:
         return stats
 
-    # 2) Fall back to inspecting composed transforms (covers the classic
-    # ``transforms.Compose`` case).
     transforms_seq = getattr(preprocess, "transforms", None)
     if transforms_seq is not None:
         for transform in transforms_seq:
@@ -213,24 +198,20 @@ def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Ten
             if stats is not None:
                 return stats
 
-    # ``torchvision.transforms.v2`` pipelines are ``nn.Module`` instances.  If
-    # available, iterating over ``children`` helps cover those cases without
-    # importing the v2 API directly.
+
     if hasattr(preprocess, "children"):
         for transform in preprocess.children():
             stats = _tensorise_stats(getattr(transform, "mean", None), getattr(transform, "std", None))
             if stats is not None:
                 return stats
 
-    # 3) Finally consult the metadata dictionary as a last resort (older
-    # torchvision releases).
+
     meta = getattr(weights, "meta", {}) or {}
     stats = _tensorise_stats(meta.get("mean"), meta.get("std"))
     if stats is not None:
         return stats
 
     raise ValueError("Unable to determine normalization statistics from weights.")
-
 
 def _shap_for_images(
     model: nn.Module,
@@ -273,7 +254,7 @@ def _shap_for_images(
         arr = _to_numpy(sv)
 
         if arr.ndim == 5:
-            # ``GradientExplainer`` can return ranked outputs as ``(N, K, C, H, W)``.
+
             ranked = np.transpose(arr, (1, 0, 2, 3, 4))
             for rank_arr in ranked:
                 shap_values_np.append(_ensure_hwc(rank_arr))
