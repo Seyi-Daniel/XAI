@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -153,16 +153,32 @@ def _shap_explanations(model: nn.Module, background: torch.Tensor, images: torch
     shap_values = explainer.shap_values(images.to(DEVICE), check_additivity=False)
 
     shap_summaries = []
+    def _ensure_chw(arr: np.ndarray) -> np.ndarray:
+        if arr.ndim == 2:
+            return np.expand_dims(arr, axis=0)
+        if arr.ndim == 3:
+            if arr.shape[0] in (1, 3):
+                return arr
+            if arr.shape[-1] in (1, 3):
+                return np.moveaxis(arr, -1, 0)
+        return arr
+
     for i in range(images.size(0)):
         image = images[i].cpu().numpy().squeeze(0)
-        shap_contrib = [np.expand_dims(sv[i, 0], axis=0) for sv in shap_values]
+        predicted = int(model(images[i:i + 1].to(DEVICE)).argmax(dim=1).item())
+
+        if isinstance(shap_values, (list, tuple)):
+            shap_contrib = [_ensure_chw(sv[i]) for sv in shap_values]
+            pixel_importance = np.mean(np.abs(shap_values[predicted][i]))
+        else:
+            sample_values = shap_values[i]
+            shap_contrib = [_ensure_chw(sample_values[class_idx]) for class_idx in range(sample_values.shape[0])]
+            pixel_importance = np.mean(np.abs(sample_values[predicted]))
+
         path = output_dir / f"shap_sample_{i}.png"
         shap.image_plot(shap_contrib, np.expand_dims(image, axis=0), show=False)
         plt.savefig(path, bbox_inches="tight")
         plt.close()
-        # summarise contributions for predicted class
-        predicted = int(model(images[i:i + 1].to(DEVICE)).argmax(dim=1).item())
-        pixel_importance = np.mean(np.abs(shap_values[predicted][i]))
         shap_summaries.append(
             f"- Sample {i}: predicted {predicted}; mean |SHAP|={pixel_importance:.4f}; figure: {path}"
         )
