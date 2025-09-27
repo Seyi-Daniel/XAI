@@ -213,6 +213,54 @@ def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Ten
 
     raise ValueError("Unable to determine normalization statistics from weights.")
 
+
+def _to_numpy(value: torch.Tensor | np.ndarray | Sequence[float]) -> np.ndarray:
+    """Return a NumPy array representation of ``value``.
+
+    SHAP can emit either ``torch.Tensor`` objects or NumPy arrays depending on
+    the explainer configuration.  Converting via this helper keeps the rest of
+    the pipeline agnostic to the original data type.
+    """
+
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().numpy()
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, (list, tuple)):
+        return np.asarray(value)
+    if hasattr(value, "numpy"):
+        return np.asarray(value.numpy())
+    raise TypeError(f"Unsupported SHAP value type: {type(value)!r}")
+
+
+def _ensure_hwc(arr: np.ndarray) -> np.ndarray:
+    """Ensure SHAP attributions use the ``(N, H, W, C)`` layout.
+
+    SHAP sometimes produces tensors in ``(N, C, H, W)`` order (PyTorch style).
+    This function normalises the layout so downstream visualisation code can
+    sum over the channel axis consistently.
+    """
+
+    arr = np.asarray(arr)
+
+    if arr.ndim == 4:
+        # (N, C, H, W) -> (N, H, W, C)
+        if arr.shape[1] != arr.shape[-1]:
+            return np.transpose(arr, (0, 2, 3, 1))
+        return arr
+
+    if arr.ndim == 3:
+        # (C, H, W) -> (H, W, C)
+        if arr.shape[0] != arr.shape[-1]:
+            return np.transpose(arr, (1, 2, 0))
+        return arr
+
+    if arr.ndim == 2:
+        # Add a channel dimension so it can be summed later on.
+        return arr[:, :, np.newaxis]
+
+    return arr
+
 def _shap_for_images(
     model: nn.Module,
     weights,
