@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -175,32 +175,45 @@ def _lime_for_images(
 def _extract_normalization(preprocess, weights) -> tuple[torch.Tensor, torch.Tensor]:
     """Return mean and std tensors used for normalization.
 
-    Some torchvision weights expose normalization statistics via their meta
-    dictionary, while others only provide them inside the composed preprocessing
-    pipeline.  Older code assumed the `meta` entries were always present, which
-    is no longer true for every release.  This helper inspects the transform
-    pipeline first and falls back to the metadata if needed so that we always
-    recover consistent statistics for de-normalising tensors before
-    visualisation.
+    TorchVision exposes preprocessing statistics in a few different ways
+    depending on the weight preset and version.  This helper inspects the
+    possible locations—direct attributes on the preprocessing transform,
+    composed transforms, module children, and the weight metadata—to recover the
+    correct tensors for de-normalising images before visualisation.
     """
 
-    normalize = None
-    transforms_seq = getattr(preprocess, "transforms", [])
-    for transform in transforms_seq:
-        if isinstance(transform, transforms.Normalize):
-            normalize = transform
-            break
+    def _tensorise_stats(mean, std) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if mean is None or std is None:
+            return None
+        mean_tensor = torch.as_tensor(mean, dtype=torch.float32, device=DEVICE)
+        std_tensor = torch.as_tensor(std, dtype=torch.float32, device=DEVICE)
+        if mean_tensor.ndim == 1:
+            mean_tensor = mean_tensor.view(-1, 1, 1)
+        if std_tensor.ndim == 1:
+            std_tensor = std_tensor.view(-1, 1, 1)
+        return mean_tensor, std_tensor
 
-    if normalize is not None:
-        mean = torch.tensor(normalize.mean, device=DEVICE).view(3, 1, 1)
-        std = torch.tensor(normalize.std, device=DEVICE).view(3, 1, 1)
-        return mean, std
+    stats = _tensorise_stats(getattr(preprocess, "mean", None), getattr(preprocess, "std", None))
+    if stats is not None:
+        return stats
+
+    transforms_seq = getattr(preprocess, "transforms", None)
+    if transforms_seq is not None:
+        for transform in transforms_seq:
+            stats = _tensorise_stats(getattr(transform, "mean", None), getattr(transform, "std", None))
+            if stats is not None:
+                return stats
+
+    if hasattr(preprocess, "children"):
+        for transform in preprocess.children():
+            stats = _tensorise_stats(getattr(transform, "mean", None), getattr(transform, "std", None))
+            if stats is not None:
+                return stats
 
     meta = getattr(weights, "meta", {}) or {}
-    if "mean" in meta and "std" in meta:
-        mean = torch.tensor(meta["mean"], device=DEVICE).view(3, 1, 1)
-        std = torch.tensor(meta["std"], device=DEVICE).view(3, 1, 1)
-        return mean, std
+    stats = _tensorise_stats(meta.get("mean"), meta.get("std"))
+    if stats is not None:
+        return stats
 
     raise ValueError("Unable to determine normalization statistics from weights.")
 
@@ -213,6 +226,16 @@ def _to_numpy(value) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value
     return np.asarray(value)
+
+
+def _ensure_hwc(value: np.ndarray) -> np.ndarray:
+    """Ensure SHAP outputs are arranged as HWC (or NHWC) arrays."""
+
+    if value.ndim == 4:
+        return np.transpose(value, (0, 2, 3, 1))
+    if value.ndim == 3:
+        return np.transpose(value, (1, 2, 0))
+    return value
 
 
 def _shap_for_images(
@@ -238,13 +261,30 @@ def _shap_for_images(
         tensor = preprocess(image).to(DEVICE)
         processed_images.append(tensor)
     batch = torch.stack(processed_images)
-    shap_values = explainer.shap_values(batch)
+    shap_result = explainer.shap_values(batch)
+
+    shap_indexes: np.ndarray | None = None
+    shap_values: Sequence[torch.Tensor | np.ndarray] | torch.Tensor | np.ndarray
+    if isinstance(shap_result, tuple) and len(shap_result) == 2:
+        shap_values, shap_indexes = shap_result
+        shap_indexes = np.asarray(shap_indexes)
+    else:
+        shap_values = shap_result
+
+    if not isinstance(shap_values, (list, tuple)):
+        shap_values = [shap_values]
 
     shap_values_np: List[np.ndarray] = []
     for sv in shap_values:
         arr = _to_numpy(sv)
-        # shap returns values with channel-first ordering -> convert to HWC
-        shap_values_np.append(np.transpose(arr, (0, 2, 3, 1)))
+
+        if arr.ndim == 5:
+            ranked = np.transpose(arr, (1, 0, 2, 3, 4))
+            for rank_arr in ranked:
+                shap_values_np.append(_ensure_hwc(rank_arr))
+            continue
+
+        shap_values_np.append(_ensure_hwc(arr))
 
     mean, std = _extract_normalization(preprocess, weights)
 
@@ -261,7 +301,30 @@ def _shap_for_images(
             probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
         predicted_idx = int(np.argmax(probs))
 
-        shap_map = shap_contrib[predicted_idx].sum(axis=2)
+        sample_indexes: List[int] | None = None
+        if shap_indexes is not None:
+            sample_slice = np.asarray(shap_indexes[idx])
+            if sample_slice.ndim == 0:
+                sample_indexes = [int(sample_slice.item())]
+            else:
+                sample_indexes = [int(x) for x in sample_slice.tolist()]
+
+        if sample_indexes is not None:
+            try:
+                target_pos = sample_indexes.index(predicted_idx)
+                target_class = predicted_idx
+            except ValueError:
+                target_pos = 0
+                target_class = sample_indexes[0]
+        else:
+            if predicted_idx < len(shap_contrib):
+                target_pos = predicted_idx
+                target_class = predicted_idx
+            else:
+                target_pos = int(np.argmax(probs[: len(shap_contrib)]))
+                target_class = target_pos
+
+        shap_map = shap_contrib[target_pos].sum(axis=2)
         vmax = np.max(np.abs(shap_map)) + 1e-8
 
         path = output_dir / f"shap_image_{idx}.png"
@@ -272,7 +335,7 @@ def _shap_for_images(
 
         axes[1].imshow(np_image)
         axes[1].imshow(shap_map, cmap="seismic", alpha=0.6, vmin=-vmax, vmax=vmax)
-        axes[1].set_title(f"SHAP for {class_names[predicted_idx]}")
+        axes[1].set_title(f"SHAP for {class_names[target_class]}")
         axes[1].axis("off")
 
         plt.tight_layout()
@@ -280,7 +343,8 @@ def _shap_for_images(
         plt.close(fig)
 
         shap_summaries.append(
-            f"- Image {idx}: predicted {class_names[predicted_idx]} (p={probs[predicted_idx]:.3f}); figure: {path}"
+            f"- Image {idx}: predicted {class_names[predicted_idx]} (p={probs[predicted_idx]:.3f}); "
+            f"visualised class: {class_names[target_class]}; figure: {path}"
         )
     return shap_summaries
 
