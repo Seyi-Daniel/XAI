@@ -152,31 +152,95 @@ def _shap_explanations(model: nn.Module, background: torch.Tensor, images: torch
     explainer = shap.DeepExplainer(model, background)
     shap_values = explainer.shap_values(images.to(DEVICE), check_additivity=False)
 
-    shap_summaries = []
-    def _ensure_chw(arr: np.ndarray) -> np.ndarray:
-        if arr.ndim == 2:
-            return np.expand_dims(arr, axis=0)
-        if arr.ndim == 3:
-            if arr.shape[0] in (1, 3):
-                return arr
-            if arr.shape[-1] in (1, 3):
-                return np.moveaxis(arr, -1, 0)
+    num_samples = images.size(0)
+    with torch.no_grad():
+        num_classes = model(images[:1].to(DEVICE)).shape[1]
+
+    def _ensure_channel_last(arr: np.ndarray) -> np.ndarray:
+        if arr.ndim >= 4 and arr.shape[1] in (1, 3) and arr.shape[-1] not in (1, 3):
+            return np.moveaxis(arr, 1, -1)
         return arr
 
-    for i in range(images.size(0)):
-        image = images[i].cpu().numpy().squeeze(0)
-        predicted = int(model(images[i:i + 1].to(DEVICE)).argmax(dim=1).item())
+    def _ensure_sample_axis(arr: np.ndarray) -> np.ndarray:
+        arr = np.asarray(arr)
+        if arr.ndim == 0:
+            return arr.reshape(1, 1)
+        if arr.shape[0] in (num_samples, 1):
+            return arr
+        matching_axes = [ax for ax, size in enumerate(arr.shape) if size == num_samples]
+        if matching_axes:
+            return np.moveaxis(arr, matching_axes[0], 0)
+        return np.expand_dims(arr, axis=0)
 
-        if isinstance(shap_values, (list, tuple)):
-            shap_contrib = [_ensure_chw(sv[i]) for sv in shap_values]
-            pixel_importance = np.mean(np.abs(shap_values[predicted][i]))
+    def _normalize_shap_values(raw_values: np.ndarray | List[np.ndarray]) -> List[np.ndarray]:
+        if isinstance(raw_values, (list, tuple)):
+            normalized = []
+            for arr in raw_values:
+                sample_first = _ensure_sample_axis(arr)
+                normalized.append(_ensure_channel_last(sample_first))
+            return normalized
+
+        arr = np.asarray(raw_values)
+        if arr.ndim == 0:
+            arr = arr.reshape(1, 1)
+        if arr.ndim >= 1 and num_classes in arr.shape:
+            class_axis = next(ax for ax, size in enumerate(arr.shape) if size == num_classes)
+            if class_axis != 0:
+                arr = np.moveaxis(arr, class_axis, 0)
         else:
-            sample_values = shap_values[i]
-            shap_contrib = [_ensure_chw(sample_values[class_idx]) for class_idx in range(sample_values.shape[0])]
-            pixel_importance = np.mean(np.abs(sample_values[predicted]))
+            arr = arr[np.newaxis, ...]
+
+        normalized = []
+        for class_values in arr:
+            sample_first = _ensure_sample_axis(class_values)
+            normalized.append(_ensure_channel_last(sample_first))
+        return normalized
+
+    normalized_values = _normalize_shap_values(shap_values)
+
+    shap_summaries = []
+
+    with torch.no_grad():
+        logits = model(images.to(DEVICE))
+        predictions = logits.argmax(dim=1).cpu().numpy()
+
+    for i in range(num_samples):
+        image = images[i].cpu().numpy().squeeze(0)
+        predicted = int(predictions[i])
+
+        if not normalized_values:
+            pixel_importance = 0.0
+            shap_for_plot: List[np.ndarray] = []
+        else:
+            class_idx = predicted if predicted < len(normalized_values) else 0
+            class_contrib = normalized_values[class_idx]
+            if class_contrib.shape[0] == 0:
+                pixel_importance = 0.0
+                sample_index = 0
+            else:
+                sample_index = min(i, class_contrib.shape[0] - 1)
+                pixel_importance = float(np.mean(np.abs(class_contrib[sample_index])))
+
+            shap_for_plot = []
+            for class_values in normalized_values:
+                if class_values.shape[0] == 0:
+                    continue
+                sample_idx = min(i, class_values.shape[0] - 1)
+                shap_for_plot.append(class_values[sample_idx : sample_idx + 1])
 
         path = output_dir / f"shap_sample_{i}.png"
-        shap.image_plot(shap_contrib, np.expand_dims(image, axis=0), show=False)
+
+        if shap_for_plot:
+            if shap_for_plot[0].ndim == 4:
+                image_for_plot = image[np.newaxis, ..., np.newaxis]
+            else:
+                image_for_plot = np.expand_dims(image, axis=0)
+            shap.image_plot(shap_for_plot, image_for_plot, show=False)
+        else:
+            plt.figure(figsize=(3, 3))
+            plt.imshow(image, cmap="gray")
+            plt.axis("off")
+
         plt.savefig(path, bbox_inches="tight")
         plt.close()
         shap_summaries.append(
